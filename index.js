@@ -1,0 +1,9 @@
+require('dotenv').config();
+const express=require('express'),path=require('path'),helmet=require('helmet'),cors=require('cors'),compression=require('compression'),rateLimit=require('express-rate-limit'),{connect,db}=require('./config/db');
+const app=express();app.set('trust proxy',1);app.use(helmet({contentSecurityPolicy:false,crossOriginResourcePolicy:{policy:'cross-origin'}}));app.use(cors({origin:process.env.CLIENT_URL?process.env.CLIENT_URL.split(',').map(x=>x.trim()):true}));app.use(compression());app.use(express.json({limit:'1mb'}));app.use(express.urlencoded({extended:true}));
+app.use('/api',rateLimit({windowMs:900000,max:300}));app.use('/uploads',express.static(path.join(process.cwd(),'uploads')));
+app.get('/api/health',async(q,s)=>{try{await db().command({ping:1});s.json({ok:true,database:'connected'});}catch{s.status(503).json({ok:false,database:'unavailable'});}});
+app.use('/api/auth',require('./routes/auth'));app.use('/api/items',require('./routes/items'));app.use('/api/claims',require('./routes/claims'));app.use('/api/notifications',require('./routes/notifications'));app.use('/api/admin',require('./routes/admin'));
+app.use(express.static(path.join(process.cwd(),'public')));app.get('*',(q,s)=>q.path.startsWith('/api')?s.status(404).json({message:'API not found'}):s.sendFile(path.join(process.cwd(),'public','index.html')));
+app.use((e,q,s,n)=>{console.error(e);if(e.code==='LIMIT_FILE_SIZE')return s.status(400).json({message:'Image must be 5 MB or less.'});if(e.message?.startsWith('Only JPG'))return s.status(400).json({message:e.message});s.status(500).json({message:process.env.NODE_ENV==='production'?'Server error.':e.message});});
+(async()=>{try{await connect();app.listen(process.env.PORT||5000,()=>console.log('LOOP server running'));}catch(e){console.error('Database connection failed:',e.message);process.exit(1);}})();

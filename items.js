@@ -1,0 +1,19 @@
+const r=require('express').Router(),{db,nextId}=require('../config/db'),{auth}=require('../middleware/auth'),{upload,imageUrl}=require('../middleware/upload'),{findMatches}=require('../services/matching');
+const categoryName=async id=>(await db().collection('categories').findOne({category_id:Number(id)}))?.category_name;
+r.get('/categories',async(_q,s,n)=>{try{const x=await db().collection('categories').find({}).sort({category_name:1}).toArray();s.json(x.map(v=>v.category_name));}catch(e){n(e);}});
+r.get('/mine',auth,async(q,s,n)=>{try{const x=await db().collection('items').find({user_id:q.user.user_id}).sort({created_at:-1}).toArray();for(const item of x)item.category_name=await categoryName(item.category_id);s.json(x);}catch(e){n(e);}});
+r.get('/',async(q,s,n)=>{try{const {q:term,type,category,location,from,to,page='1'}=q.query,filter={status:{$in:['open','matched','claimed']}};
+ if(['lost','found'].includes(type))filter.type=type;if(category){const c=await db().collection('categories').findOne({category_name:category});if(!c)return s.json({items:[],total:0,page:Number(page)||1,pages:1});filter.category_id=c.category_id;}
+ if(location)filter.location={$regex:String(location).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),$options:'i'};if(from||to)filter.date_event={...(from?{$gte:String(from)}:{}),...(to?{$lte:String(to)}:{})};
+ if(term){const pattern=String(term).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),regex={$regex:pattern,$options:'i'};filter.$or=[{title:regex},{description:regex},{location:regex}];}
+ const lim=12,p=Math.max(1,Number.parseInt(page,10)||1),total=await db().collection('items').countDocuments(filter),rows=await db().collection('items').find(filter).sort({created_at:-1}).skip((p-1)*lim).limit(lim).toArray();
+ for(const item of rows)item.category_name=await categoryName(item.category_id);s.json({items:rows,total,page:p,pages:Math.max(1,Math.ceil(total/lim))});}catch(e){n(e);}});
+r.post('/',auth,upload.single('image'),async(q,s,n)=>{try{const {type,title,description,category,location,date_event}=q.body;
+ if(!['lost','found'].includes(type)||!title||!description||!category||!location||!date_event)return s.status(400).json({message:'Complete all required fields.'});
+ const c=await db().collection('categories').findOne({category_name:category});if(!c)return s.status(400).json({message:'Invalid category.'});
+ const item={item_id:await nextId('item'),user_id:q.user.user_id,type,title:title.trim(),description:description.trim(),category_id:c.category_id,category_name:c.category_name,location:location.trim(),date_event,image_path:imageUrl(q.file),status:'open',created_at:new Date()};
+ await db().collection('items').insertOne(item);const matches=await findMatches(item.item_id);s.status(201).json({message:'Report posted.',itemId:item.item_id,matches});}catch(e){n(e);}});
+r.get('/:id/matches',auth,async(q,s,n)=>{try{const id=Number(q.params.id),pairs=await db().collection('matches').find({$or:[{item_a:id},{item_b:id}]}).sort({score:-1}).toArray(),rows=[];for(const m of pairs){const item=await db().collection('items').findOne({item_id:m.item_a===id?m.item_b:m.item_a});if(item)rows.push({score:m.score,item_id:item.item_id,title:item.title,type:item.type,location:item.location,image_path:item.image_path});}s.json(rows);}catch(e){n(e);}});
+r.get('/:id',async(q,s,n)=>{try{const item=await db().collection('items').findOne({item_id:Number(q.params.id)});if(!item)return s.status(404).json({message:'Item not found.'});delete item.user_id;item.category_name=await categoryName(item.category_id);s.json(item);}catch(e){n(e);}});
+r.delete('/:id',auth,async(q,s,n)=>{try{const x=await db().collection('items').updateOne({item_id:Number(q.params.id),user_id:q.user.user_id,status:{$in:['open','matched']}},{$set:{status:'closed'}});if(!x.modifiedCount)return s.status(404).json({message:'Report cannot be closed.'});s.json({message:'Report closed.'});}catch(e){n(e);}});
+module.exports=r;

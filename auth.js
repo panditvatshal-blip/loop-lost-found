@@ -1,0 +1,15 @@
+const r=require('express').Router(),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),{db,nextId}=require('../config/db'),{auth}=require('../middleware/auth'),{sendMail}=require('../services/mailer');
+const token=u=>jwt.sign({id:u.user_id},process.env.JWT_SECRET,{expiresIn:process.env.JWT_EXPIRES_IN||'7d'});
+r.post('/register',async(req,res,next)=>{try{const {name,email,password,phone,department}=req.body;const normalized=String(email||'').trim().toLowerCase();
+ if(!name||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)||!password||password.length<8)return res.status(400).json({message:'Enter a valid name, email and password (8+ characters).'});
+ const users=db().collection('users');if(await users.findOne({email:normalized}))return res.status(409).json({message:'Email already registered.'});
+ const user={user_id:await nextId('user'),name:name.trim(),email:normalized,password_hash:await bcrypt.hash(password,12),phone:phone||null,department:department||null,role:'user',status:'active',created_at:new Date()};
+ await users.insertOne(user);const publicUser={user_id:user.user_id,name:user.name,email:user.email,role:user.role};await sendMail(user.email,'Welcome to LOOP','Your campus portal account is ready.');res.status(201).json({token:token(publicUser),user:publicUser});
+ }catch(e){if(e.code===11000)return res.status(409).json({message:'Email already registered.'});next(e);}});
+r.post('/login',async(req,res,next)=>{try{const user=await db().collection('users').findOne({email:String(req.body.email||'').toLowerCase().trim()});
+ if(!user||!await bcrypt.compare(req.body.password||'',user.password_hash))return res.status(401).json({message:'Incorrect email or password.'});if(user.status!=='active')return res.status(403).json({message:'Account blocked.'});
+ const publicUser={user_id:user.user_id,name:user.name,email:user.email,role:user.role};res.json({token:token(publicUser),user:publicUser});}catch(e){next(e);}});
+r.get('/me',auth,(req,res)=>res.json({user:req.user}));
+r.put('/profile',auth,async(req,res,next)=>{try{const {name,phone,department}=req.body;if(!name)return res.status(400).json({message:'Name required.'});await db().collection('users').updateOne({user_id:req.user.user_id},{$set:{name,phone:phone||null,department:department||null}});res.json({message:'Profile updated.'});}catch(e){next(e);}});
+r.put('/password',auth,async(req,res,next)=>{try{const user=await db().collection('users').findOne({user_id:req.user.user_id});if(!await bcrypt.compare(req.body.currentPassword||'',user.password_hash))return res.status(400).json({message:'Current password incorrect.'});if(!req.body.newPassword||req.body.newPassword.length<8)return res.status(400).json({message:'New password must be 8+ characters.'});await db().collection('users').updateOne({user_id:user.user_id},{$set:{password_hash:await bcrypt.hash(req.body.newPassword,12)}});res.json({message:'Password updated.'});}catch(e){next(e);}});
+module.exports=r;
